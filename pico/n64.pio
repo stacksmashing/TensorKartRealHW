@@ -1,0 +1,99 @@
+.program n64
+
+; Repeatedly get one word of data from the TX FIFO, stalling when the FIFO is
+; empty. Write the least significant bit to the OUT pin group.
+
+; 1 NOP is 0.125uS
+
+entry:
+    SET X, 8
+    SET PINS, 0
+
+loop:
+    SET PINDIRS, 0
+
+
+    ; wait for bus high
+    WAIT 1 PIN 0
+
+
+    ; Wait for falling flank on incoming data
+    WAIT 0 PIN 0 [18]
+
+    
+    ; previous instruction should execute in 2uS, so we're in the middle of the data
+    ; Read bit
+    IN PINS, 1 ; read 1 bit from input
+    JMP X-- loop
+    PUSH
+
+    NOP [20]
+
+
+    ; at this point auto push should have notified our code. now it's time to send
+    ; data.
+    PULL [10]
+    MOV Y, OSR
+    PULL
+
+pull_and_send:
+    
+    ; move 1 bit to send to X
+    OUT X, 1
+    JMP !X send_0
+    JMP send_1
+
+
+
+
+send_0:
+    SET PINDIRS, 1 [22] ; setting pindirs to output will cause it to be pulled low
+    SET PINDIRS, 0 [4]  ; setting to input will make it get pulled high
+    JMP Y-- pull_and_send
+    JMP send_stop
+
+
+send_1:
+    SET PINDIRS, 1 [7] ; send low
+    SET PINDIRS, 0 [18] ; send high
+    JMP Y-- pull_and_send
+    JMP send_stop
+
+
+
+send_stop:
+    SET PINDIRS, 1 [14]
+    SET PINDIRS, 0
+    SET X, 8
+    JMP loop
+
+    
+
+
+    ; Check if 1 or zero 
+
+% c-sdk {
+static inline pio_sm_config n64_program_init(PIO pio, uint sm, uint offset, uint pin, float clkdiv) {
+    pio_sm_config c = n64_program_get_default_config(offset);
+
+    // Map the state machine's OUT pin group to one pin, namely the `pin`
+    // parameter to this function.
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_set_pins(&c, pin, 1);
+
+    sm_config_set_in_shift(&c, false, false, 32);
+    sm_config_set_out_shift(&c, true, false, 24);
+    
+    // Set this pin's GPIO function (connect PIO to the pad)
+    pio_gpio_init(pio, pin);
+    // Set the pin direction to output at the PIO
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(pio, sm, offset, &c);
+    // Set the state machine running
+    pio_sm_set_enabled(pio, sm, true);
+    return c;
+}
+%}
